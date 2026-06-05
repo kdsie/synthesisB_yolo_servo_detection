@@ -22,6 +22,8 @@ from __future__ import division
 import logging
 import time
 import math
+import os
+import fcntl
 
 
 # Registers/etc:
@@ -52,14 +54,49 @@ OUTDRV             = 0x04
 logger = logging.getLogger(__name__)
 
 
+class _LinuxI2CDevice(object):
+    """Small /dev/i2c-* fallback used when Adafruit_GPIO is not installed."""
+
+    I2C_SLAVE = 0x0703
+
+    def __init__(self, address, busnum=1, **kwargs):
+        self.address = address
+        self.busnum = kwargs.pop("busnum", busnum)
+        self._fd = os.open(f"/dev/i2c-{self.busnum}", os.O_RDWR)
+        fcntl.ioctl(self._fd, self.I2C_SLAVE, self.address)
+
+    def write8(self, register, value):
+        os.write(self._fd, bytes([register & 0xFF, value & 0xFF]))
+
+    def readU8(self, register):
+        os.write(self._fd, bytes([register & 0xFF]))
+        return os.read(self._fd, 1)[0]
+
+    def writeRaw8(self, value):
+        os.write(self._fd, bytes([value & 0xFF]))
+
+    def __del__(self):
+        fd = getattr(self, "_fd", None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            self._fd = None
+
+
 def software_reset(i2c=None, **kwargs):
     """Sends a software reset (SWRST) command to all servo drivers on the bus."""
-    # Setup I2C interface for device 0x00 to talk to all of them.
     if i2c is None:
-        import Adafruit_GPIO.I2C as I2C
-        i2c = I2C
-    self._device = i2c.get_i2c_device(0x00, **kwargs)
-    self._device.writeRaw8(0x06)  # SWRST
+        try:
+            import Adafruit_GPIO.I2C as I2C
+            i2c = I2C
+        except ImportError:
+            device = _LinuxI2CDevice(0x00, **kwargs)
+            device.writeRaw8(0x06)
+            return
+    device = i2c.get_i2c_device(0x00, **kwargs)
+    device.writeRaw8(0x06)  # SWRST
 
 
 class PCA9685(object):
@@ -69,9 +106,11 @@ class PCA9685(object):
         """Initialize the PCA9685."""
         # Setup I2C interface for the device.
         if i2c is None:
-            import Adafruit_GPIO.I2C as I2C
-            i2c = I2C
-        self._device = i2c.get_i2c_device(address, **kwargs)
+            # Prefer the local /dev/i2c-* implementation on OrangePi. It avoids
+            # Adafruit_GPIO choosing the wrong bus when multiple I2C buses exist.
+            self._device = _LinuxI2CDevice(address, **kwargs)
+        else:
+            self._device = i2c.get_i2c_device(address, **kwargs)
         self.set_all_pwm(0, 0)
         self._device.write8(MODE2, OUTDRV)
         self._device.write8(MODE1, ALLCALL)

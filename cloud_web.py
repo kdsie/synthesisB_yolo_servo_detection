@@ -19,6 +19,8 @@ PUBLIC_URL = "webzb.sh1.p2link.cn:8080"  # 公网访问地址
 
 # 数据共享目录 - 用于与cloud_linux.py共享数据
 DATA_DIR = "./shared_data"
+GIMBAL_COMMAND_FILE = "gimbal_command.json"
+GIMBAL_ACTIONS = {"left", "right", "up", "down", "center"}
 
 # 创建Flask应用
 app = Flask(__name__)
@@ -368,6 +370,44 @@ def index():
                 background-color: var(--ok);
                 color: white;
             }
+            .gimbal-card {
+                padding-bottom: 16px;
+            }
+            .gimbal-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 54px);
+                grid-template-rows: repeat(3, 48px);
+                gap: 8px;
+                justify-content: center;
+                align-items: center;
+                margin-top: 8px;
+            }
+            .gimbal-button {
+                border: 1px solid #cbd5e1;
+                background: #f8fafc;
+                color: var(--ink);
+                border-radius: 7px;
+                font-size: 20px;
+                font-weight: 800;
+                cursor: pointer;
+                height: 48px;
+                transition: background 0.16s, transform 0.16s, border-color 0.16s;
+            }
+            .gimbal-button:hover {
+                background: #eaf2ff;
+                border-color: var(--brand);
+            }
+            .gimbal-button:active {
+                transform: translateY(1px);
+            }
+            .gimbal-status {
+                text-align: center;
+                min-height: 20px;
+                margin-top: 10px;
+                color: var(--muted);
+                font-size: 13px;
+            }
+
             .status-offline {
                 background-color: #ef4444;
                 color: white;
@@ -522,6 +562,23 @@ def index():
                             </div>
                         </div>
                     </div>
+                    <div class="stats-card gimbal-card">
+                        <div class="panel-header">
+                            <h2>Gimbal Control</h2>
+                        </div>
+                        <div class="gimbal-grid" aria-label="Gimbal direction controls">
+                            <div></div>
+                            <button class="gimbal-button" title="Up" onclick="sendGimbalCommand('up')">&uarr;</button>
+                            <div></div>
+                            <button class="gimbal-button" title="Left" onclick="sendGimbalCommand('left')">&larr;</button>
+                            <button class="gimbal-button" title="Center" onclick="sendGimbalCommand('center')">C</button>
+                            <button class="gimbal-button" title="Right" onclick="sendGimbalCommand('right')">&rarr;</button>
+                            <div></div>
+                            <button class="gimbal-button" title="Down" onclick="sendGimbalCommand('down')">&darr;</button>
+                            <div></div>
+                        </div>
+                        <div id="gimbal-status" class="gimbal-status">Ready</div>
+                    </div>
                 </div>
 
                 <div class="detection-container">
@@ -548,6 +605,33 @@ def index():
             
             function hideLoading() {
                 document.getElementById('loading-overlay').classList.remove('active');
+            }
+            
+            function sendGimbalCommand(action) {
+                const status = document.getElementById('gimbal-status');
+                if (status) {
+                    status.textContent = 'Sending...';
+                }
+                fetch('/api/gimbal', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({action: action, step: 20})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.ok) {
+                        throw new Error(data.error || 'gimbal command failed');
+                    }
+                    if (status) {
+                        status.textContent = `Sent: ${data.action}`;
+                    }
+                })
+                .catch(error => {
+                    console.error('gimbal command failed:', error);
+                    if (status) {
+                        status.textContent = 'Command failed';
+                    }
+                });
             }
             
             function refreshData(showLoadingIndicator = false) {
@@ -755,6 +839,41 @@ def video_feed():
     
     # 返回JPEG图像
     return Response(frame_bytes, mimetype='image/jpeg')
+
+
+
+@app.route('/api/gimbal', methods=['POST'])
+def gimbal_control():
+    """Write a manual gimbal command for main_cloud.py to consume."""
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in GIMBAL_ACTIONS:
+        return jsonify({"ok": False, "error": "invalid action"}), 400
+
+    try:
+        step = int(payload.get("step", 20))
+    except (TypeError, ValueError):
+        step = 20
+    step = max(1, min(step, 80))
+
+    command = {
+        "id": time.time_ns(),
+        "action": action,
+        "step": step,
+        "created_at": time.time(),
+    }
+    os.makedirs(DATA_DIR, exist_ok=True)
+    command_path = os.path.join(DATA_DIR, GIMBAL_COMMAND_FILE)
+    temp_path = command_path + ".tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(command, f, ensure_ascii=False)
+        os.replace(temp_path, command_path)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+    return jsonify({"ok": True, "action": action, "step": step})
+
 
 @app.route('/api/stats')
 def get_stats():

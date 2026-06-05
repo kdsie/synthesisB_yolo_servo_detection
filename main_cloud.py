@@ -8,6 +8,7 @@ selects one target box, and optionally drives the PCA9685 servo gimbal.
 
 from multiprocessing import Lock, Manager, Process
 import argparse
+import json
 import os
 import time
 
@@ -18,9 +19,10 @@ from servo import servo_control
 
 
 CHANNEL_X = 0
-CHANNEL_Y = 15
+CHANNEL_Y = 3
 FRAME_SIZE = 640
 DEFAULT_WS_URL = os.getenv("CLOUD_WS_URL", "ws://127.0.0.1:8765")
+GIMBAL_COMMAND_FILE = "gimbal_command.json"
 
 
 def class_name(client, class_id):
@@ -60,6 +62,52 @@ def select_target_box(client, boxes, classes, scores, target_label=""):
     label = class_name(client, class_id)
     return boxes[best_index], label, best_score
 
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def read_gimbal_command(data_dir, last_command_id):
+    command_path = os.path.join(data_dir, GIMBAL_COMMAND_FILE)
+    if not os.path.exists(command_path):
+        return None, last_command_id
+    try:
+        with open(command_path, "r", encoding="utf-8") as f:
+            command = json.load(f)
+    except Exception as exc:
+        print(f"Failed to read gimbal command: {exc}")
+        return None, last_command_id
+
+    command_id = command.get("id")
+    if command_id == last_command_id:
+        return None, last_command_id
+    return command, command_id
+
+
+def apply_gimbal_command(servo_pwm, command, angle_cur_x, angle_cur_y, limits):
+    action = command.get("action")
+    step = int(command.get("step", 20))
+    x_min, x_max, y_min, y_max = limits
+
+    if action == "left":
+        angle_cur_x = clamp(angle_cur_x + step, x_min, x_max)
+    elif action == "right":
+        angle_cur_x = clamp(angle_cur_x - step, x_min, x_max)
+    elif action == "up":
+        angle_cur_y = clamp(angle_cur_y - step, y_min, y_max)
+    elif action == "down":
+        angle_cur_y = clamp(angle_cur_y + step, y_min, y_max)
+    elif action == "center":
+        angle_cur_x = 500
+        angle_cur_y = 350
+    else:
+        return angle_cur_x, angle_cur_y
+
+    servo_pwm.set_pwm(CHANNEL_X, 0, int(angle_cur_x))
+    servo_pwm.set_pwm(CHANNEL_Y, 0, int(angle_cur_y))
+    print(f"Manual gimbal command: {action}, X={angle_cur_x}, Y={angle_cur_y}")
+    return angle_cur_x, angle_cur_y
 
 def camera_process(shared, lock, camera_id, ws_url, target_label, send_interval):
     print("进入camera_process")
@@ -115,15 +163,20 @@ def camera_process(shared, lock, camera_id, ws_url, target_label, send_interval)
         client.close()
 
 
-def servo_process(shared, lock):
-    print("进入servo_process")
+
+def init_servo_pwm():
+    import Adafruit_PCA9685
+    servo_pwm = Adafruit_PCA9685.PCA9685(busnum=1)
+    servo_pwm.set_pwm_freq(60)
+    return servo_pwm
+
+def servo_process(shared, lock, data_dir, manual_only):
+    print("??servo_process")
     time.sleep(3)
 
     try:
-        import Adafruit_PCA9685
-        servo_pwm = Adafruit_PCA9685.PCA9685(busnum=1)
-        servo_pwm.set_pwm_freq(60)
-        print("PCA9685初始化成功")
+        servo_pwm = init_servo_pwm()
+        print("PCA9685?????")
 
         angle_cur_x = 500
         angle_max_x = 700
@@ -134,18 +187,45 @@ def servo_process(shared, lock):
 
         servo_pwm.set_pwm(CHANNEL_X, 0, angle_cur_x)
         servo_pwm.set_pwm(CHANNEL_Y, 0, angle_cur_y)
-        print(f"舵机设置到初始位置: X={angle_cur_x}, Y={angle_cur_y}")
+        print(f"?????????: X={angle_cur_x}, Y={angle_cur_y}")
     except Exception as exc:
-        print(f"舵机初始化失败，跳过云台控制: {exc}")
+        print(f"??????????????: {exc}")
         import traceback
         traceback.print_exc()
         return
 
     error_max = 25
     frame_center = (FRAME_SIZE // 2, FRAME_SIZE // 2)
+    last_command_id = None
 
     try:
         while True:
+            command, last_command_id = read_gimbal_command(data_dir, last_command_id)
+            if command is not None:
+                try:
+                    angle_cur_x, angle_cur_y = apply_gimbal_command(
+                        servo_pwm,
+                        command,
+                        angle_cur_x,
+                        angle_cur_y,
+                        (angle_min_x, angle_max_x, angle_min_y, angle_max_y),
+                    )
+                except OSError as exc:
+                    print(f"I2C write failed, reinitializing PCA9685: {exc}")
+                    time.sleep(0.3)
+                    try:
+                        servo_pwm = init_servo_pwm()
+                        servo_pwm.set_pwm(CHANNEL_X, 0, int(angle_cur_x))
+                        servo_pwm.set_pwm(CHANNEL_Y, 0, int(angle_cur_y))
+                    except Exception as retry_exc:
+                        print(f"PCA9685 reinit failed: {retry_exc}")
+                time.sleep(0.05)
+                continue
+
+            if manual_only:
+                time.sleep(0.05)
+                continue
+
             with lock:
                 box = shared.get("box", None)
 
@@ -158,19 +238,29 @@ def servo_process(shared, lock):
             delta_x = x_center - frame_center[0]
             delta_y = frame_center[1] - y_center
 
-            if abs(delta_x) > error_max:
-                angle_cur_x = servo_control(servo_pwm, CHANNEL_X, angle_cur_x, angle_max_x, angle_min_x, delta_x)
-            if abs(delta_y) > error_max:
-                angle_cur_y = servo_control(servo_pwm, CHANNEL_Y, angle_cur_y, angle_max_y, angle_min_y, delta_y)
+            try:
+                if abs(delta_x) > error_max:
+                    angle_cur_x = servo_control(servo_pwm, CHANNEL_X, angle_cur_x, angle_max_x, angle_min_x, delta_x)
+                if abs(delta_y) > error_max:
+                    angle_cur_y = servo_control(servo_pwm, CHANNEL_Y, angle_cur_y, angle_max_y, angle_min_y, delta_y)
+            except OSError as exc:
+                print(f"I2C auto-track write failed, reinitializing PCA9685: {exc}")
+                time.sleep(0.3)
+                try:
+                    servo_pwm = init_servo_pwm()
+                    servo_pwm.set_pwm(CHANNEL_X, 0, int(angle_cur_x))
+                    servo_pwm.set_pwm(CHANNEL_Y, 0, int(angle_cur_y))
+                except Exception as retry_exc:
+                    print(f"PCA9685 reinit failed: {retry_exc}")
 
             with lock:
                 shared["box"] = None
             time.sleep(0.1)
 
     except KeyboardInterrupt:
-        print("servo_process已中断")
+        print("servo_process???")
     except Exception as exc:
-        print(f"servo_process出错: {exc}")
+        print(f"servo_process??: {exc}")
         import traceback
         traceback.print_exc()
 
@@ -218,6 +308,8 @@ def parse_args():
     parser.add_argument("--send-interval", type=float, default=0.05, help="两帧发送之间的额外等待时间")
     parser.add_argument("--no-servo", action="store_true", help="不启动舵机云台进程")
     parser.add_argument("--display", action="store_true", help="打开本地OpenCV显示窗口；SSH下通常不用")
+    parser.add_argument("--data-dir", default="./shared_data", help="shared data directory used by cloud_web.py")
+    parser.add_argument("--manual-only", action="store_true", help="only respond to web gimbal buttons; disable auto tracking")
     return parser.parse_args()
 
 
@@ -238,11 +330,18 @@ def main():
     shared["scores"] = None
     lock = Lock()
 
-    processes = [Process(target=camera_process, args=(shared, lock, args.camera, args.ws_url, args.target_label, args.send_interval))]
-    if not args.no_servo:
-        processes.append(Process(target=servo_process, args=(shared, lock)))
-    if args.display:
-        processes.append(Process(target=display_process, args=(shared, lock)))
+    processes = []
+    if args.manual_only:
+        if args.no_servo:
+            print("manual-only????????????????--no-servo")
+            return
+        processes.append(Process(target=servo_process, args=(shared, lock, args.data_dir, True)))
+    else:
+        processes.append(Process(target=camera_process, args=(shared, lock, args.camera, args.ws_url, args.target_label, args.send_interval)))
+        if not args.no_servo:
+            processes.append(Process(target=servo_process, args=(shared, lock, args.data_dir, False)))
+        if args.display:
+            processes.append(Process(target=display_process, args=(shared, lock)))
 
     try:
         for process in processes:
