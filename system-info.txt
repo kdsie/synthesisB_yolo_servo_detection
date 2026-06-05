@@ -1,0 +1,5 @@
+Linux orangepi5pro 6.1.43-rockchip-rk3588 #1.0.6 SMP Wed Nov 13 00:19:29 CST 2024 aarch64 aarch64 aarch64 GNU/Linux
+Distributor ID:	Ubuntu
+Description:	Ubuntu 22.04.5 LTS
+Release:	22.04
+Codename:	jammy
