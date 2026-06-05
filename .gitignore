@@ -27,7 +27,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 requirements.txt
-setup.py
+!requirements.txt
+/setup.py
+!my_wheel/setup.py
 ultralytics.egg-info
 
 # PyInstaller
