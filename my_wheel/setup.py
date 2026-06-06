@@ -11,9 +11,9 @@ ext_modules = [
         extra_compile_args=["-std=c++11"],
     )
 ]
-#setup
+
 setup(
-    name="image_filter", 
+    name="image_filter",
     version="0.1.0",
     author="project team",
     author_email="team@example.com",

@@ -166,7 +166,9 @@ def camera_process(shared, lock, camera_id, ws_url, target_label, send_interval)
 
 def init_servo_pwm():
     import Adafruit_PCA9685
-    servo_pwm = Adafruit_PCA9685.PCA9685(busnum=1)
+    busnum = int(os.getenv("PCA9685_BUS", "1"), 0)
+    address = int(os.getenv("PCA9685_ADDRESS", "0x40"), 0)
+    servo_pwm = Adafruit_PCA9685.PCA9685(address=address, busnum=busnum)
     servo_pwm.set_pwm_freq(60)
     return servo_pwm
 

@@ -27,9 +27,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 requirements.txt
-!requirements.txt
-/setup.py
-!my_wheel/setup.py
+setup.py
 ultralytics.egg-info
 
 # PyInstaller
@@ -171,3 +169,7 @@ pnnx*
 
 # calibration image
 calibration_*.npy
+Miniconda3-latest-Linux-x86_64.sh
+Miniconda3-latest-Linux-aarch64.sh
+*.onnx
+*.rknn

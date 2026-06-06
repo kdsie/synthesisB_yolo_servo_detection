@@ -24,6 +24,7 @@ import time
 import math
 import os
 import fcntl
+import glob
 
 
 # Registers/etc:
@@ -59,11 +60,73 @@ class _LinuxI2CDevice(object):
 
     I2C_SLAVE = 0x0703
 
-    def __init__(self, address, busnum=1, **kwargs):
+    @staticmethod
+    def _available_buses():
+        buses = []
+        for path in glob.glob("/dev/i2c-*"):
+            try:
+                buses.append(int(path.rsplit("-", 1)[1]))
+            except (IndexError, ValueError):
+                pass
+        return sorted(buses)
+
+    @classmethod
+    def _open_bus(cls, address, busnum):
+        fd = os.open(f"/dev/i2c-{busnum}", os.O_RDWR)
+        try:
+            fcntl.ioctl(fd, cls.I2C_SLAVE, address)
+            return fd
+        except Exception:
+            os.close(fd)
+            raise
+
+    @classmethod
+    def _probe_fd(cls, fd, busnum):
+        # Probe the registers used during PCA9685 startup. Some Rockchip buses
+        # accept the address ioctl but fail on real register access; those must
+        # not be selected.
+        for register in (MODE1, MODE2, PRESCALE, MODE1):
+            os.write(fd, bytes([register & 0xFF]))
+            data = os.read(fd, 1)
+            if len(data) != 1:
+                raise OSError(f"short read on /dev/i2c-{busnum}")
+
+    @classmethod
+    def _detect_bus(cls, address):
+        errors = []
+        for busnum in cls._available_buses():
+            try:
+                fd = cls._open_bus(address, busnum)
+                try:
+                    cls._probe_fd(fd, busnum)
+                except OSError:
+                    os.close(fd)
+                    raise
+                return busnum, fd
+            except OSError as exc:
+                errors.append(f"/dev/i2c-{busnum}@0x{address:02x}: {exc}")
+        raise OSError("PCA9685 not found on /dev/i2c-*; " + "; ".join(errors))
+
+    def __init__(self, address=None, busnum=None, **kwargs):
+        address = kwargs.pop("address", address)
+        busnum = kwargs.pop("busnum", busnum)
+
+        if address is None:
+            address_text = os.getenv("PCA9685_ADDRESS", "").strip()
+            address = int(address_text, 0) if address_text else PCA9685_ADDRESS
+
+        if busnum is None:
+            bus_text = os.getenv("PCA9685_BUS", "").strip()
+            busnum = int(bus_text, 0) if bus_text else None
+
         self.address = address
-        self.busnum = kwargs.pop("busnum", busnum)
-        self._fd = os.open(f"/dev/i2c-{self.busnum}", os.O_RDWR)
-        fcntl.ioctl(self._fd, self.I2C_SLAVE, self.address)
+        if busnum is None:
+            self.busnum, self._fd = self._detect_bus(self.address)
+            print(f"PCA9685 detected on /dev/i2c-{self.busnum} address 0x{self.address:02x}")
+        else:
+            self.busnum = busnum
+            self._fd = self._open_bus(self.address, self.busnum)
+            self._probe_fd(self._fd, self.busnum)
 
     def write8(self, register, value):
         os.write(self._fd, bytes([register & 0xFF, value & 0xFF]))
@@ -102,7 +165,7 @@ def software_reset(i2c=None, **kwargs):
 class PCA9685(object):
     """PCA9685 PWM LED/servo controller."""
 
-    def __init__(self, address=PCA9685_ADDRESS, i2c=None, **kwargs):
+    def __init__(self, address=None, i2c=None, **kwargs):
         """Initialize the PCA9685."""
         # Setup I2C interface for the device.
         if i2c is None:
