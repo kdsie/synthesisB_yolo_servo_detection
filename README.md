@@ -1,8 +1,8 @@
-﻿云端目标检测与舵机云台系统
+# ﻿云端目标检测与舵机云台系统
 
 本工程当前采用“OrangePi采集摄像头画面 -> WebSocket发送到云端/本机服务 -> YOLO检测 -> Web页面展示 -> 可选舵机云台跟踪”的方案。当前已验证可运行的入口是三个脚本：cloud_linux.py、cloud_web.py、main_cloud.py。
 
-当前可用功能
+## 当前可用功能
 
 - cloud_linux.py：检测服务端。接收OrangePi发来的图像，调用YOLO模型推理，返回检测框、类别、置信度，并把最新画面和统计数据写入shared_data。
 - cloud_web.py：Web可视化页面。读取shared_data，展示实时画面、系统状态、网络统计、检测结果列表。页面中保留本小组成员信息。
@@ -14,7 +14,7 @@
 - yolo11n.onnx、yolo11n_fp.rknn：由yolo11n.pt导出ONNX后，在本地WSL中使用rknn-toolkit2转换得到。
   
   
-运行方式
+## 运行方式
 
 在OrangePi上进入项目目录和环境：
 
@@ -41,7 +41,7 @@ http://172.20.10.2:8080
 
 python main_cloud.py --ws-url ws://127.0.0.1:8765
 
-RKNN实现简要说明
+## RKNN实现简要说明
 
 为了降低OrangePi上直接运行PyTorch/Ultralytics模型的负担，本项目增加了RKNN版本。转换流程为：
 
@@ -55,7 +55,7 @@ python cloud_linux_rknn.py --host 0.0.0.0 --port 8765 --model yolo11n_fp.rknn --
 
 终端2和终端3仍然使用原来的cloud_web.py和main_cloud.py命令。
 
-5x5卷积 whl 模块
+## 5x5卷积 whl 模块
 
 my_wheel/保留了一个可复用的C++/pybind11 5x5卷积模块
 
